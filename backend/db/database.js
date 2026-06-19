@@ -9,9 +9,14 @@ async function initDatabase() {
   const SQL = await initSqlJs();
 
   if (fs.existsSync(dbPath)) {
-    const fileBuffer = fs.readFileSync(dbPath);
-    db = new SQL.Database(fileBuffer);
-    console.log('Database loaded from file');
+    try {
+      const fileBuffer = fs.readFileSync(dbPath);
+      db = new SQL.Database(fileBuffer);
+      console.log('Database loaded from file');
+    } catch (e) {
+      console.error('Failed to load database, creating new one:', e.message);
+      db = new SQL.Database();
+    }
   } else {
     db = new SQL.Database();
     console.log('New database created');
@@ -22,8 +27,8 @@ async function initDatabase() {
 }
 
 function createTables() {
-  db.run(`
-    CREATE TABLE IF NOT EXISTS prompt_templates (
+  const statements = [
+    `CREATE TABLE IF NOT EXISTS prompt_templates (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       description TEXT,
@@ -33,11 +38,8 @@ function createTables() {
       category TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS audio_assets (
+    )`,
+    `CREATE TABLE IF NOT EXISTS audio_assets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       filename TEXT NOT NULL,
       original_name TEXT NOT NULL,
@@ -49,11 +51,8 @@ function createTables() {
       transcript TEXT,
       metadata TEXT DEFAULT '{}',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS test_cases (
+    )`,
+    `CREATE TABLE IF NOT EXISTS test_cases (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       description TEXT,
@@ -61,32 +60,22 @@ function createTables() {
       expected_emotion TEXT,
       expected_style TEXT,
       reference_audio_id INTEGER,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (reference_audio_id) REFERENCES audio_assets(id)
-    );
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS test_sets (
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS test_sets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       description TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS test_set_cases (
+    )`,
+    `CREATE TABLE IF NOT EXISTS test_set_cases (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       test_set_id INTEGER NOT NULL,
       test_case_id INTEGER NOT NULL,
       sort_order INTEGER DEFAULT 0,
       UNIQUE(test_set_id, test_case_id)
-    );
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS llm_models (
+    )`,
+    `CREATE TABLE IF NOT EXISTS llm_models (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       api_base TEXT NOT NULL,
@@ -95,11 +84,8 @@ function createTables() {
       endpoint TEXT DEFAULT '/v1/chat/completions',
       is_active INTEGER DEFAULT 1,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS test_runs (
+    )`,
+    `CREATE TABLE IF NOT EXISTS test_runs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       test_set_id INTEGER,
       prompt_template_id INTEGER,
@@ -111,11 +97,8 @@ function createTables() {
       passed_cases INTEGER DEFAULT 0,
       failed_cases INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS test_results (
+    )`,
+    `CREATE TABLE IF NOT EXISTS test_results (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       test_run_id INTEGER NOT NULL,
       test_case_id INTEGER NOT NULL,
@@ -129,10 +112,34 @@ function createTables() {
       status TEXT DEFAULT 'completed',
       error_message TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
+    )`
+  ];
+
+  for (const sql of statements) {
+    try {
+      db.run(sql);
+    } catch (e) {
+      console.error('Failed to create table:', e.message);
+    }
+  }
 
   saveDatabase();
+}
+
+let saveTimer = null;
+let needsSave = false;
+
+function scheduleSave() {
+  needsSave = true;
+  if (!saveTimer) {
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      if (needsSave) {
+        saveDatabase();
+        needsSave = false;
+      }
+    }, 100);
+  }
 }
 
 function saveDatabase() {
@@ -141,7 +148,92 @@ function saveDatabase() {
     const buffer = Buffer.from(data);
     fs.writeFileSync(dbPath, buffer);
   } catch (e) {
-    console.error('Failed to save database:', e);
+    console.error('Failed to save database:', e.message);
+  }
+}
+
+function run(sql, params = []) {
+  try {
+    const stmt = db.prepare(sql);
+    if (params.length > 0) {
+      stmt.bind(params);
+    }
+    stmt.step();
+    stmt.free();
+    scheduleSave();
+    return {
+      changes: db.getRowsModified()
+    };
+  } catch (e) {
+    console.error('SQL Error (run):', e.message);
+    console.error('SQL:', sql);
+    console.error('Params:', params);
+    throw e;
+  }
+}
+
+function get(sql, params = []) {
+  try {
+    const stmt = db.prepare(sql);
+    if (params.length > 0) {
+      stmt.bind(params);
+    }
+    let result = undefined;
+    if (stmt.step()) {
+      result = stmt.getAsObject();
+    }
+    stmt.free();
+    return result;
+  } catch (e) {
+    console.error('SQL Error (get):', e.message);
+    console.error('SQL:', sql);
+    console.error('Params:', params);
+    throw e;
+  }
+}
+
+function all(sql, params = []) {
+  try {
+    const stmt = db.prepare(sql);
+    if (params.length > 0) {
+      stmt.bind(params);
+    }
+    const results = [];
+    while (stmt.step()) {
+      results.push(stmt.getAsObject());
+    }
+    stmt.free();
+    return results;
+  } catch (e) {
+    console.error('SQL Error (all):', e.message);
+    console.error('SQL:', sql);
+    console.error('Params:', params);
+    throw e;
+  }
+}
+
+function insert(sql, params = []) {
+  try {
+    const stmt = db.prepare(sql);
+    if (params.length > 0) {
+      stmt.bind(params);
+    }
+    stmt.step();
+    stmt.free();
+    
+    const idResult = db.exec('SELECT last_insert_rowid() as id');
+    const lastId = idResult[0]?.values[0]?.[0];
+    
+    scheduleSave();
+    return {
+      changes: db.getRowsModified(),
+      lastInsertRowid: lastId
+    };
+  } catch (e) {
+    console.error('SQL Error (insert):', e.message);
+    console.error('SQL:', sql);
+    console.error('Params:', params);
+    throw e;
   }
 }
 
@@ -150,79 +242,88 @@ function prepare(sql) {
   
   return {
     run(...params) {
-      stmt.bind(params);
-      stmt.step();
-      const lastId = db.exec('SELECT last_insert_rowid() as id')[0]?.values[0]?.[0];
-      const changes = db.getRowsModified();
-      stmt.reset();
-      saveDatabase();
-      return {
-        changes,
-        lastInsertRowid: lastId
-      };
+      try {
+        stmt.reset();
+        if (params.length > 0) {
+          stmt.bind(params);
+        }
+        stmt.step();
+        
+        let lastId = null;
+        try {
+          const idResult = db.exec('SELECT last_insert_rowid() as id');
+          lastId = idResult[0]?.values[0]?.[0];
+        } catch (e) {
+          // 忽略获取 lastInsertRowid 的错误
+        }
+        
+        scheduleSave();
+        return {
+          changes: db.getRowsModified(),
+          lastInsertRowid: lastId
+        };
+      } catch (e) {
+        console.error('SQL Error (prepare.run):', e.message);
+        console.error('SQL:', sql);
+        console.error('Params:', params);
+        try { stmt.reset(); } catch (_) {}
+        throw e;
+      }
     },
     get(...params) {
-      stmt.bind(params);
-      if (stmt.step()) {
-        const row = stmt.getAsObject();
+      try {
         stmt.reset();
-        return row;
+        if (params.length > 0) {
+          stmt.bind(params);
+        }
+        let result = undefined;
+        if (stmt.step()) {
+          result = stmt.getAsObject();
+        }
+        return result;
+      } catch (e) {
+        console.error('SQL Error (prepare.get):', e.message);
+        console.error('SQL:', sql);
+        console.error('Params:', params);
+        try { stmt.reset(); } catch (_) {}
+        throw e;
       }
-      stmt.reset();
-      return undefined;
     },
     all(...params) {
-      const results = [];
-      stmt.bind(params);
-      while (stmt.step()) {
-        results.push(stmt.getAsObject());
+      try {
+        stmt.reset();
+        if (params.length > 0) {
+          stmt.bind(params);
+        }
+        const results = [];
+        while (stmt.step()) {
+          results.push(stmt.getAsObject());
+        }
+        return results;
+      } catch (e) {
+        console.error('SQL Error (prepare.all):', e.message);
+        console.error('SQL:', sql);
+        console.error('Params:', params);
+        try { stmt.reset(); } catch (_) {}
+        throw e;
       }
-      stmt.reset();
-      return results;
+    },
+    free() {
+      try {
+        stmt.free();
+      } catch (e) {
+        // 忽略释放错误
+      }
     }
-  };
-}
-
-function exec(sql, params = []) {
-  const results = db.exec(sql, params);
-  saveDatabase();
-  return results;
-}
-
-function all(sql, params = []) {
-  const stmt = db.prepare(sql);
-  const results = [];
-  if (params.length > 0) {
-    stmt.bind(params);
-  }
-  while (stmt.step()) {
-    results.push(stmt.getAsObject());
-  }
-  stmt.free();
-  return results;
-}
-
-function get(sql, params = []) {
-  const rows = all(sql, params);
-  return rows[0];
-}
-
-function run(sql, params = []) {
-  const stmt = db.prepare(sql);
-  stmt.run(params);
-  stmt.free();
-  saveDatabase();
-  return {
-    changes: db.getRowsModified()
   };
 }
 
 module.exports = {
   initDatabase,
   prepare,
-  exec,
-  all,
-  get,
   run,
+  get,
+  all,
+  insert,
   saveDatabase
 };
