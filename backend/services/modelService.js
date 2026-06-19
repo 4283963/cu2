@@ -122,14 +122,18 @@ function calculateEvaluationScore(options) {
   
   let score = 0;
   let totalWeight = 0;
+  let emotionScore = 0;
+  let styleScore = 0;
 
   if (expected_emotion) {
     totalWeight += 0.6;
     if (detected_emotion === expected_emotion) {
       score += 0.6;
+      emotionScore = 1;
     } else if (detected_emotion && expected_emotion) {
       const similarity = stringSimilarity(detected_emotion, expected_emotion);
       score += 0.6 * similarity;
+      emotionScore = similarity;
     }
   }
 
@@ -137,14 +141,110 @@ function calculateEvaluationScore(options) {
     totalWeight += 0.4;
     if (detected_style === expected_style) {
       score += 0.4;
+      styleScore = 1;
     } else if (detected_style && expected_style) {
       const similarity = stringSimilarity(detected_style, expected_style);
       score += 0.4 * similarity;
+      styleScore = similarity;
     }
   }
 
-  if (totalWeight === 0) return 0;
-  return Math.min(score / totalWeight, 1);
+  if (totalWeight === 0) return { score: 0, emotionScore, styleScore };
+  return { 
+    score: Math.min(score / totalWeight, 1), 
+    emotionScore, 
+    styleScore 
+  };
+}
+
+function calculateKeywordScore(modelOutput, expectedKeywords = [], expectedPhrases = []) {
+  if (!modelOutput || (!expectedKeywords.length && !expectedPhrases.length)) {
+    return {
+      score: 0,
+      matchedKeywords: [],
+      missedKeywords: [],
+      matchedPhrases: [],
+      missedPhrases: [],
+      keywordScore: 0,
+      phraseScore: 0
+    };
+  }
+
+  const output = modelOutput.toLowerCase();
+  let matchedKeywords = [];
+  let missedKeywords = [];
+  let keywordScore = 0;
+
+  if (expectedKeywords && expectedKeywords.length > 0) {
+    for (const kw of expectedKeywords) {
+      if (!kw) continue;
+      const kwLower = String(kw).toLowerCase().trim();
+      if (kwLower && output.includes(kwLower)) {
+        matchedKeywords.push(kw);
+      } else {
+        missedKeywords.push(kw);
+      }
+    }
+    keywordScore = expectedKeywords.length > 0 
+      ? matchedKeywords.length / expectedKeywords.length 
+      : 0;
+  }
+
+  let matchedPhrases = [];
+  let missedPhrases = [];
+  let phraseScore = 0;
+
+  if (expectedPhrases && expectedPhrases.length > 0) {
+    for (const ph of expectedPhrases) {
+      if (!ph) continue;
+      const phLower = String(ph).toLowerCase().trim();
+      if (phLower && output.includes(phLower)) {
+        matchedPhrases.push(ph);
+      } else {
+        missedPhrases.push(ph);
+      }
+    }
+    phraseScore = expectedPhrases.length > 0 
+      ? matchedPhrases.length / expectedPhrases.length 
+      : 0;
+  }
+
+  const totalExpected = expectedKeywords.length + expectedPhrases.length;
+  const totalMatched = matchedKeywords.length + matchedPhrases.length;
+  const overallScore = totalExpected > 0 ? totalMatched / totalExpected : 0;
+
+  return {
+    score: overallScore,
+    matchedKeywords,
+    missedKeywords,
+    matchedPhrases,
+    missedPhrases,
+    keywordScore,
+    phraseScore
+  };
+}
+
+function calculateFinalEvaluation(emotionStyleResult, keywordResult) {
+  const weights = {
+    emotionStyle: 0.5,
+    keyword: 0.5
+  };
+
+  let totalWeight = 0;
+  let finalScore = 0;
+
+  if (emotionStyleResult.score > 0 || emotionStyleResult.emotionScore > 0 || emotionStyleResult.styleScore > 0) {
+    finalScore += emotionStyleResult.score * weights.emotionStyle;
+    totalWeight += weights.emotionStyle;
+  }
+
+  if (keywordResult.score >= 0 && (keywordResult.keywordScore > 0 || keywordResult.phraseScore > 0 || keywordResult.matchedKeywords.length > 0 || keywordResult.matchedPhrases.length > 0 || keywordResult.missedKeywords.length > 0 || keywordResult.missedPhrases.length > 0)) {
+    finalScore += keywordResult.score * weights.keyword;
+    totalWeight += weights.keyword;
+  }
+
+  if (totalWeight === 0) return emotionStyleResult.score || 0;
+  return Math.min(finalScore / totalWeight, 1);
 }
 
 function stringSimilarity(str1, str2) {
@@ -164,5 +264,7 @@ module.exports = {
   chatCompletion,
   extractEmotionStyle,
   calculateEvaluationScore,
+  calculateKeywordScore,
+  calculateFinalEvaluation,
   stringSimilarity
 };

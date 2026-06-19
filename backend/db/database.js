@@ -23,6 +23,7 @@ async function initDatabase() {
   }
 
   createTables();
+  migrateDatabase();
   console.log('Database initialized successfully');
 }
 
@@ -59,6 +60,8 @@ function createTables() {
       script_text TEXT NOT NULL,
       expected_emotion TEXT,
       expected_style TEXT,
+      expected_keywords TEXT DEFAULT '[]',
+      expected_phrases TEXT DEFAULT '[]',
       reference_audio_id INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`,
@@ -108,6 +111,10 @@ function createTables() {
       matched_audio_id INTEGER,
       match_score REAL,
       evaluation_score REAL,
+      keyword_score REAL DEFAULT 0,
+      emotion_score REAL DEFAULT 0,
+      style_score REAL DEFAULT 0,
+      keyword_match_details TEXT,
       evaluation_details TEXT,
       status TEXT DEFAULT 'completed',
       error_message TEXT,
@@ -149,6 +156,59 @@ function saveDatabase() {
     fs.writeFileSync(dbPath, buffer);
   } catch (e) {
     console.error('Failed to save database:', e.message);
+  }
+}
+
+function migrateDatabase() {
+  try {
+    const migrations = [
+      {
+        table: 'test_cases',
+        column: 'expected_keywords',
+        sql: 'ALTER TABLE test_cases ADD COLUMN expected_keywords TEXT DEFAULT \'[]\''
+      },
+      {
+        table: 'test_cases',
+        column: 'expected_phrases',
+        sql: 'ALTER TABLE test_cases ADD COLUMN expected_phrases TEXT DEFAULT \'[]\''
+      },
+      {
+        table: 'test_results',
+        column: 'keyword_score',
+        sql: 'ALTER TABLE test_results ADD COLUMN keyword_score REAL DEFAULT 0'
+      },
+      {
+        table: 'test_results',
+        column: 'emotion_score',
+        sql: 'ALTER TABLE test_results ADD COLUMN emotion_score REAL DEFAULT 0'
+      },
+      {
+        table: 'test_results',
+        column: 'style_score',
+        sql: 'ALTER TABLE test_results ADD COLUMN style_score REAL DEFAULT 0'
+      },
+      {
+        table: 'test_results',
+        column: 'keyword_match_details',
+        sql: 'ALTER TABLE test_results ADD COLUMN keyword_match_details TEXT'
+      }
+    ];
+
+    for (const m of migrations) {
+      try {
+        const columns = all(`PRAGMA table_info(${m.table})`, []);
+        const exists = Array.isArray(columns) && columns.some(col => col.name === m.column);
+        if (!exists) {
+          run(m.sql);
+          console.log(`Migrated: added ${m.column} to ${m.table}`);
+        }
+      } catch (e) {
+        console.error(`Migration failed for ${m.table}.${m.column}:`, e.message);
+      }
+    }
+    saveDatabase();
+  } catch (e) {
+    console.error('Database migration failed:', e.message);
   }
 }
 

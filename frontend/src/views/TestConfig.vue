@@ -31,6 +31,35 @@
               <span v-else class="text-muted">-</span>
             </template>
           </el-table-column>
+          <el-table-column label="关键词规则" width="200">
+            <template #default="{ row }">
+              <div v-if="row.expected_keywords?.length || row.expected_phrases?.length">
+                <el-tag
+                  v-for="kw in (row.expected_keywords || []).slice(0, 2)"
+                  :key="'kw-' + kw"
+                  size="small"
+                  type="primary"
+                  effect="plain"
+                  style="margin-right: 4px; margin-bottom: 2px;"
+                >{{ kw }}</el-tag>
+                <el-tag
+                  v-for="ph in (row.expected_phrases || []).slice(0, 2)"
+                  :key="'ph-' + ph"
+                  size="small"
+                  type="info"
+                  effect="plain"
+                  style="margin-right: 4px; margin-bottom: 2px;"
+                >"{{ ph }}"</el-tag>
+                <el-tag
+                  v-if="(row.expected_keywords?.length || 0) + (row.expected_phrases?.length || 0) > 4"
+                  size="small"
+                >
+                  +{{ (row.expected_keywords?.length || 0) + (row.expected_phrases?.length || 0) - 4 }}
+                </el-tag>
+              </div>
+              <span v-else class="text-muted">-</span>
+            </template>
+          </el-table-column>
           <el-table-column prop="created_at" label="创建时间" width="180">
             <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
           </el-table-column>
@@ -177,7 +206,7 @@
       </el-tab-pane>
     </el-tabs>
 
-    <el-dialog v-model="caseDialogVisible" :title="caseForm.id ? '编辑用例' : '新建用例'" width="600px">
+    <el-dialog v-model="caseDialogVisible" :title="caseForm.id ? '编辑用例' : '新建用例'" width="700px">
       <el-form :model="caseForm" label-width="100px">
         <el-form-item label="用例名称" required>
           <el-input v-model="caseForm.name" placeholder="请输入用例名称" />
@@ -197,6 +226,45 @@
           <el-select v-model="caseForm.expected_style" filterable allow-create default-first-option placeholder="选择或输入" style="width: 100%;">
             <el-option v-for="s in styleOptions" :key="s" :label="s" :value="s" />
           </el-select>
+        </el-form-item>
+        <el-divider content-position="left">评估规则</el-divider>
+        <el-form-item label="期望关键词">
+          <el-select
+            v-model="caseForm.expected_keywords"
+            multiple
+            filterable
+            allow-create
+            default-first-option
+            placeholder="输入后回车添加关键词"
+            style="width: 100%;"
+          >
+            <el-option
+              v-for="kw in keywordSuggestions"
+              :key="kw"
+              :label="kw"
+              :value="kw"
+            />
+          </el-select>
+          <div class="field-hint">模型输出中必须包含这些关键词，用于匹配打分</div>
+        </el-form-item>
+        <el-form-item label="期望短语">
+          <el-select
+            v-model="caseForm.expected_phrases"
+            multiple
+            filterable
+            allow-create
+            default-first-option
+            placeholder="输入后回车添加期望短语"
+            style="width: 100%;"
+          >
+            <el-option
+              v-for="ph in phraseSuggestions"
+              :key="ph"
+              :label="`\"${ph}\"`"
+              :value="ph"
+            />
+          </el-select>
+          <div class="field-hint">模型输出中必须包含这些完整短语，匹配权重更高</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -297,7 +365,28 @@ const emotionOptions = ref([])
 const styleOptions = ref([])
 
 const caseDialogVisible = ref(false)
-const caseForm = reactive({ id: null, name: '', description: '', script_text: '', expected_emotion: '', expected_style: '' })
+const caseForm = reactive({
+  id: null,
+  name: '',
+  description: '',
+  script_text: '',
+  expected_emotion: '',
+  expected_style: '',
+  expected_keywords: [],
+  expected_phrases: []
+})
+
+const keywordSuggestions = computed(() => {
+  const all = new Set()
+  caseList.value.forEach(c => (c.expected_keywords || []).forEach(kw => all.add(kw)))
+  return Array.from(all)
+})
+
+const phraseSuggestions = computed(() => {
+  const all = new Set()
+  caseList.value.forEach(c => (c.expected_phrases || []).forEach(ph => all.add(ph)))
+  return Array.from(all)
+})
 
 const setDialogVisible = ref(false)
 const setForm = reactive({ id: null, name: '', description: '' })
@@ -379,9 +468,27 @@ async function fetchRecentRuns() {
 
 function openCaseDialog(row = null) {
   if (row) {
-    Object.assign(caseForm, row)
+    Object.assign(caseForm, {
+      id: row.id,
+      name: row.name,
+      description: row.description || '',
+      script_text: row.script_text,
+      expected_emotion: row.expected_emotion || '',
+      expected_style: row.expected_style || '',
+      expected_keywords: Array.isArray(row.expected_keywords) ? [...row.expected_keywords] : [],
+      expected_phrases: Array.isArray(row.expected_phrases) ? [...row.expected_phrases] : []
+    })
   } else {
-    Object.assign(caseForm, { id: null, name: '', description: '', script_text: '', expected_emotion: '', expected_style: '' })
+    Object.assign(caseForm, {
+      id: null,
+      name: '',
+      description: '',
+      script_text: '',
+      expected_emotion: '',
+      expected_style: '',
+      expected_keywords: [],
+      expected_phrases: []
+    })
   }
   caseDialogVisible.value = true
 }
@@ -665,6 +772,13 @@ onMounted(() => {
     .case-name {
       font-size: 13px;
     }
+  }
+
+  .field-hint {
+    font-size: 12px;
+    color: #909399;
+    margin-top: 4px;
+    line-height: 1.5;
   }
 }
 </style>

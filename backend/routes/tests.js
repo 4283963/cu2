@@ -38,7 +38,11 @@ router.get('/cases', (req, res) => {
     ORDER BY tc.created_at DESC 
     LIMIT ? OFFSET ?
   `);
-  const cases = stmt.all(...params, Number(pageSize), offset);
+  const cases = stmt.all(...params, Number(pageSize), offset).map(item => ({
+    ...item,
+    expected_keywords: parseJsonField(item.expected_keywords, []),
+    expected_phrases: parseJsonField(item.expected_phrases, [])
+  }));
 
   res.json({
     list: cases,
@@ -56,19 +60,21 @@ router.get('/cases/:id', (req, res) => {
     return res.status(404).json({ error: 'Test case not found' });
   }
 
+  testCase.expected_keywords = parseJsonField(testCase.expected_keywords, []);
+  testCase.expected_phrases = parseJsonField(testCase.expected_phrases, []);
   res.json(testCase);
 });
 
 router.post('/cases', (req, res) => {
-  const { name, description, script_text, expected_emotion, expected_style, reference_audio_id } = req.body;
+  const { name, description, script_text, expected_emotion, expected_style, expected_keywords, expected_phrases, reference_audio_id } = req.body;
 
   if (!name || !script_text) {
     return res.status(400).json({ error: 'Name and script_text are required' });
   }
 
   const stmt = db.prepare(`
-    INSERT INTO test_cases (name, description, script_text, expected_emotion, expected_style, reference_audio_id)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO test_cases (name, description, script_text, expected_emotion, expected_style, expected_keywords, expected_phrases, reference_audio_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const result = stmt.run(
     name,
@@ -76,15 +82,21 @@ router.post('/cases', (req, res) => {
     script_text,
     expected_emotion || '',
     expected_style || '',
+    JSON.stringify(expected_keywords || []),
+    JSON.stringify(expected_phrases || []),
     reference_audio_id || null
   );
 
   const testCase = db.prepare('SELECT * FROM test_cases WHERE id = ?').get(result.lastInsertRowid);
+  if (testCase) {
+    testCase.expected_keywords = parseJsonField(testCase.expected_keywords, []);
+    testCase.expected_phrases = parseJsonField(testCase.expected_phrases, []);
+  }
   res.status(201).json(testCase);
 });
 
 router.put('/cases/:id', (req, res) => {
-  const { name, description, script_text, expected_emotion, expected_style, reference_audio_id } = req.body;
+  const { name, description, script_text, expected_emotion, expected_style, expected_keywords, expected_phrases, reference_audio_id } = req.body;
   const id = req.params.id;
 
   const existing = db.prepare('SELECT * FROM test_cases WHERE id = ?').get(id);
@@ -92,9 +104,12 @@ router.put('/cases/:id', (req, res) => {
     return res.status(404).json({ error: 'Test case not found' });
   }
 
+  const oldKeywords = parseJsonField(existing.expected_keywords, []);
+  const oldPhrases = parseJsonField(existing.expected_phrases, []);
+
   const stmt = db.prepare(`
     UPDATE test_cases 
-    SET name = ?, description = ?, script_text = ?, expected_emotion = ?, expected_style = ?, reference_audio_id = ?
+    SET name = ?, description = ?, script_text = ?, expected_emotion = ?, expected_style = ?, expected_keywords = ?, expected_phrases = ?, reference_audio_id = ?
     WHERE id = ?
   `);
   stmt.run(
@@ -103,11 +118,17 @@ router.put('/cases/:id', (req, res) => {
     script_text || existing.script_text,
     expected_emotion !== undefined ? expected_emotion : existing.expected_emotion,
     expected_style !== undefined ? expected_style : existing.expected_style,
+    expected_keywords !== undefined ? JSON.stringify(expected_keywords) : JSON.stringify(oldKeywords),
+    expected_phrases !== undefined ? JSON.stringify(expected_phrases) : JSON.stringify(oldPhrases),
     reference_audio_id !== undefined ? reference_audio_id : existing.reference_audio_id,
     id
   );
 
   const updated = db.prepare('SELECT * FROM test_cases WHERE id = ?').get(id);
+  if (updated) {
+    updated.expected_keywords = parseJsonField(updated.expected_keywords, []);
+    updated.expected_phrases = parseJsonField(updated.expected_phrases, []);
+  }
   res.json(updated);
 });
 
@@ -161,7 +182,11 @@ router.get('/sets/:id', (req, res) => {
     JOIN test_cases tc ON tsc.test_case_id = tc.id
     WHERE tsc.test_set_id = ?
     ORDER BY tsc.sort_order ASC
-  `).all(req.params.id);
+  `).all(req.params.id).map(item => ({
+    ...item,
+    expected_keywords: parseJsonField(item.expected_keywords, []),
+    expected_phrases: parseJsonField(item.expected_phrases, [])
+  }));
 
   testSet.cases = cases;
   res.json(testSet);
@@ -230,7 +255,11 @@ router.post('/sets/:id/cases', (req, res) => {
     JOIN test_cases tc ON tsc.test_case_id = tc.id
     WHERE tsc.test_set_id = ?
     ORDER BY tsc.sort_order ASC
-  `).all(id);
+  `).all(id).map(item => ({
+    ...item,
+    expected_keywords: parseJsonField(item.expected_keywords, []),
+    expected_phrases: parseJsonField(item.expected_phrases, [])
+  }));
 
   res.json({ message: 'Cases added to test set', cases });
 });
@@ -306,8 +335,8 @@ async function processTestRun(runId, cases, promptTemplate, model) {
   let failed = 0;
 
   const insertResult = db.prepare(`
-    INSERT INTO test_results (test_run_id, test_case_id, model_output, detected_emotion, detected_style, matched_audio_id, match_score, evaluation_score, evaluation_details, status, error_message)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO test_results (test_run_id, test_case_id, model_output, detected_emotion, detected_style, matched_audio_id, match_score, evaluation_score, keyword_score, emotion_score, style_score, keyword_match_details, evaluation_details, status, error_message)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   for (const testCase of cases) {
@@ -333,12 +362,19 @@ async function processTestRun(runId, cases, promptTemplate, model) {
       const matchResult = audioService.matchAudio(emotion, style, 1);
       const matchedAudio = matchResult.matches[0] || null;
 
-      const evalScore = modelService.calculateEvaluationScore({
+      const expectedKeywords = parseJsonField(testCase.expected_keywords, []);
+      const expectedPhrases = parseJsonField(testCase.expected_phrases, []);
+
+      const emotionStyleResult = modelService.calculateEvaluationScore({
         expected_emotion: testCase.expected_emotion,
         expected_style: testCase.expected_style,
         detected_emotion: emotion,
         detected_style: style
       });
+
+      const keywordResult = modelService.calculateKeywordScore(modelOutput, expectedKeywords, expectedPhrases);
+
+      const evalScore = modelService.calculateFinalEvaluation(emotionStyleResult, keywordResult);
 
       if (evalScore >= 0.6) {
         passed++;
@@ -355,7 +391,16 @@ async function processTestRun(runId, cases, promptTemplate, model) {
         matchedAudio ? matchedAudio.id : null,
         matchedAudio ? matchedAudio.match_score : 0,
         evalScore,
-        JSON.stringify({ emotion_match: emotion === testCase.expected_emotion, style_match: style === testCase.expected_style }),
+        keywordResult.score,
+        emotionStyleResult.emotionScore,
+        emotionStyleResult.styleScore,
+        JSON.stringify(keywordResult),
+        JSON.stringify({
+          emotion_match: emotion === testCase.expected_emotion,
+          style_match: style === testCase.expected_style,
+          emotion_details: emotionStyleResult,
+          keyword_details: keywordResult
+        }),
         'completed',
         null
       );
@@ -371,6 +416,10 @@ async function processTestRun(runId, cases, promptTemplate, model) {
         null,
         0,
         0,
+        0,
+        0,
+        0,
+        null,
         null,
         'failed',
         error.message
@@ -455,6 +504,8 @@ router.get('/runs/:id', (req, res) => {
            tc.script_text,
            tc.expected_emotion,
            tc.expected_style,
+           tc.expected_keywords,
+           tc.expected_phrases,
            aa.original_name as matched_audio_name,
            aa.filename as matched_audio_filename
     FROM test_results tr
@@ -465,6 +516,9 @@ router.get('/runs/:id', (req, res) => {
   `).all(req.params.id).map(item => ({
     ...item,
     evaluation_details: parseJsonField(item.evaluation_details, {}),
+    keyword_match_details: parseJsonField(item.keyword_match_details, {}),
+    expected_keywords: parseJsonField(item.expected_keywords, []),
+    expected_phrases: parseJsonField(item.expected_phrases, []),
     matched_audio_url: item.matched_audio_filename ? `/uploads/audio/${item.matched_audio_filename}` : null
   }));
 

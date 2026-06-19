@@ -27,7 +27,12 @@
               v-for="run in runList"
               :key="run.id"
               class="run-item"
-              :class="{ active: selectedRun?.id === run.id }"
+              :class="{ 
+                active: selectedRun?.id === run.id,
+                'run-high-score': getRunAvgScore(run) >= 0.8,
+                'run-good-score': getRunAvgScore(run) >= 0.6 && getRunAvgScore(run) < 0.8,
+                'run-low-score': getRunAvgScore(run) < 0.6 && run.status === 'completed'
+              }"
               @click="selectRun(run)"
             >
               <div class="run-header">
@@ -45,12 +50,18 @@
                 </span>
               </div>
               <div class="run-stats" v-if="run.status === 'completed'">
-                <el-progress
-                  :percentage="Math.round((run.passed_cases / run.total_cases) * 100)"
-                  :stroke-width="6"
-                  :show-text="false"
-                />
-                <span class="stats-text">{{ run.passed_cases }}/{{ run.total_cases }} 通过</span>
+                <div class="score-row">
+                  <el-progress
+                    :percentage="Math.round((run.passed_cases / run.total_cases) * 100)"
+                    :stroke-width="6"
+                    :show-text="false"
+                    :color="getRunAvgScore(run) >= 0.6 ? '#67C23A' : '#F56C6C'"
+                  />
+                  <span class="stats-text">{{ run.passed_cases }}/{{ run.total_cases }} 通过</span>
+                  <el-tag size="small" :type="getScoreLevelType(getRunAvgScore(run))" class="avg-score-tag">
+                    平均分 {{ (getRunAvgScore(run)).toFixed(2) }}
+                  </el-tag>
+                </div>
               </div>
               <div class="run-time">{{ formatTime(run.created_at) }}</div>
             </div>
@@ -123,45 +134,97 @@
           <div class="results-section">
             <div class="section-title">详细结果</div>
             
-            <el-table :data="selectedRun.results" border stripe>
+            <el-table 
+              :data="selectedRun.results" 
+              border 
+              stripe
+              :row-class-name="getRowClassName"
+            >
               <el-table-column type="index" label="#" width="60" />
               <el-table-column prop="test_case_name" label="用例名称" width="150" />
               <el-table-column label="脚本内容" show-overflow-tooltip>
                 <template #default="{ row }">{{ row.script_text }}</template>
               </el-table-column>
-              <el-table-column label="预期" width="140">
+              <el-table-column label="评估规则" width="220">
                 <template #default="{ row }">
                   <div>
-                <el-tag size="small" type="warning">{{ row.expected_emotion || '-' }}</el-tag>
-                <el-tag size="small" type="success" style="margin-left: 4px;">{{ row.expected_style || '-' }}</el-tag>
-              </div>
-                </template>
-              </el-table-column>
-              <el-table-column label="模型识别" width="140">
-                <template #default="{ row }">
-                  <div>
-                    <el-tag size="small" :type="row.detected_emotion === row.expected_emotion ? 'success' : 'danger'">
-                      {{ row.detected_emotion || '-' }}
-                    </el-tag>
-                    <el-tag
-                      size="small"
-                      :type="row.detected_style === row.expected_style ? 'success' : 'danger'"
-                      style="margin-left: 4px;"
-                    >
-                      {{ row.detected_style || '-' }}
-                    </el-tag>
+                    <div>
+                      <el-tag size="small" type="warning">{{ row.expected_emotion || '-' }}</el-tag>
+                      <el-tag size="small" type="success" style="margin-left: 4px;">{{ row.expected_style || '-' }}</el-tag>
+                    </div>
+                    <div class="rule-tags" v-if="(row.expected_keywords?.length || 0) + (row.expected_phrases?.length || 0) > 0">
+                      <el-tag
+                        v-for="kw in (row.expected_keywords || []).slice(0, 3)"
+                        :key="'kw-' + kw"
+                        size="small"
+                        type="primary"
+                        effect="plain"
+                        class="mini-tag"
+                      >{{ kw }}</el-tag>
+                      <el-tag
+                        v-for="ph in (row.expected_phrases || []).slice(0, 2)"
+                        :key="'ph-' + ph"
+                        size="small"
+                        type="info"
+                        effect="plain"
+                        class="mini-tag"
+                      >"{{ ph }}"</el-tag>
+                    </div>
                   </div>
                 </template>
               </el-table-column>
-              <el-table-column prop="evaluation_score" label="评分" width="100">
+              <el-table-column label="评分分解" width="200">
                 <template #default="{ row }">
-                  <el-progress
-                  :percentage="Math.round((row.evaluation_score || 0) * 100)"
-                  :stroke-width="4"
-                  :show-text="false"
-                  :status="row.evaluation_score >= 0.6 ? 'success' : 'exception'"
-                />
-                  <span class="score-text">{{ (row.evaluation_score || 0).toFixed(2) }}</span>
+                  <div class="score-breakdown">
+                    <div class="breakdown-item">
+                      <span class="bd-label">情感</span>
+                      <el-progress
+                        :percentage="Math.round((row.emotion_score || 0) * 100)"
+                        :stroke-width="3"
+                        :show-text="false"
+                        :status="row.emotion_score >= 0.6 ? 'success' : 'exception'"
+                        style="flex: 1; margin: 0 6px;"
+                      />
+                      <span class="bd-value">{{ (row.emotion_score || 0).toFixed(2) }}</span>
+                    </div>
+                    <div class="breakdown-item">
+                      <span class="bd-label">风格</span>
+                      <el-progress
+                        :percentage="Math.round((row.style_score || 0) * 100)"
+                        :stroke-width="3"
+                        :show-text="false"
+                        :status="row.style_score >= 0.6 ? 'success' : 'exception'"
+                        style="flex: 1; margin: 0 6px;"
+                      />
+                      <span class="bd-value">{{ (row.style_score || 0).toFixed(2) }}</span>
+                    </div>
+                    <div class="breakdown-item" v-if="(row.expected_keywords?.length || 0) + (row.expected_phrases?.length || 0) > 0">
+                      <span class="bd-label">关键词</span>
+                      <el-progress
+                        :percentage="Math.round((row.keyword_score || 0) * 100)"
+                        :stroke-width="3"
+                        :show-text="false"
+                        :status="row.keyword_score >= 0.6 ? 'success' : 'exception'"
+                        style="flex: 1; margin: 0 6px;"
+                      />
+                      <span class="bd-value">{{ (row.keyword_score || 0).toFixed(2) }}</span>
+                    </div>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column prop="evaluation_score" label="综合评分" width="120">
+                <template #default="{ row }">
+                  <div :class="['final-score-cell', getScoreLevelClass(row.evaluation_score)]">
+                    <el-progress
+                      :percentage="Math.round((row.evaluation_score || 0) * 100)"
+                      :stroke-width="4"
+                      :show-text="false"
+                      :color="getScoreColor(row.evaluation_score)"
+                    />
+                    <span class="final-score-text" :style="{ color: getScoreColor(row.evaluation_score) }">
+                      {{ (row.evaluation_score || 0).toFixed(2) }}
+                    </span>
+                  </div>
                 </template>
               </el-table-column>
               <el-table-column label="操作" width="100" fixed="right">
@@ -179,7 +242,7 @@
       </el-col>
     </el-row>
 
-    <el-dialog v-model="detailVisible" title="结果详情" width="700px">
+    <el-dialog v-model="detailVisible" title="结果详情" width="800px">
       <div v-if="currentResult" class="result-detail">
         <div class="detail-item">
           <span class="label">用例名称：</span>
@@ -191,12 +254,37 @@
         </div>
         <el-divider />
         <div class="detail-item">
-          <span class="label">预期情感：</span>
-          <el-tag type="warning">{{ currentResult.expected_emotion || '-' }}</el-tag>
-        </div>
-        <div class="detail-item">
-          <span class="label">预期风格：</span>
-          <el-tag type="success">{{ currentResult.expected_style || '-' }}</el-tag>
+          <span class="label">评估规则：</span>
+          <div class="value">
+            <div class="rule-detail-row">
+              <el-tag size="small" type="warning">{{ currentResult.expected_emotion || '-' }}</el-tag>
+              <el-tag size="small" type="success" style="margin-left: 8px;">{{ currentResult.expected_style || '-' }}</el-tag>
+            </div>
+            <div v-if="(currentResult.expected_keywords?.length || 0) + (currentResult.expected_phrases?.length || 0) > 0" class="rule-detail-row mt-8">
+              <div v-if="currentResult.expected_keywords?.length" class="rule-group">
+                <div class="rule-group-label">期望关键词：</div>
+                <el-tag
+                  v-for="kw in currentResult.expected_keywords"
+                  :key="'ekw-' + kw"
+                  size="small"
+                  :type="currentResult.keyword_match_details?.matchedKeywords?.includes(kw) ? 'success' : 'danger'"
+                  effect="plain"
+                  class="mr-4 mb-4"
+                >{{ kw }}</el-tag>
+              </div>
+              <div v-if="currentResult.expected_phrases?.length" class="rule-group">
+                <div class="rule-group-label">期望短语：</div>
+                <el-tag
+                  v-for="ph in currentResult.expected_phrases"
+                  :key="'eph-' + ph"
+                  size="small"
+                  :type="currentResult.keyword_match_details?.matchedPhrases?.includes(ph) ? 'success' : 'danger'"
+                  effect="plain"
+                  class="mr-4 mb-4"
+                >"{{ ph }}"</el-tag>
+              </div>
+            </div>
+          </div>
         </div>
         <el-divider />
         <div class="detail-item">
@@ -218,9 +306,63 @@
             <el-icon><Headset /></el-icon> 试听
           </el-button>
         </div>
-        <div class="detail-item">
-          <span class="label">评估分数：</span>
-          <span class="value score-big">{{ (currentResult.evaluation_score || 0).toFixed(2) }}</span>
+        <el-divider />
+        <div class="detail-item score-detail-section">
+          <span class="label">评分详情：</span>
+          <div class="value score-breakdown-large">
+            <div class="bd-large-item">
+              <span class="bd-large-label">情感得分</span>
+              <el-progress
+                :percentage="Math.round((currentResult.emotion_score || 0) * 100)"
+                :stroke-width="8"
+                :show-text="false"
+                :color="getScoreColor(currentResult.emotion_score)"
+                style="flex: 1; margin: 0 12px;"
+              />
+              <span class="bd-large-value" :style="{ color: getScoreColor(currentResult.emotion_score) }">
+                {{ (currentResult.emotion_score || 0).toFixed(2) }}
+              </span>
+            </div>
+            <div class="bd-large-item">
+              <span class="bd-large-label">风格得分</span>
+              <el-progress
+                :percentage="Math.round((currentResult.style_score || 0) * 100)"
+                :stroke-width="8"
+                :show-text="false"
+                :color="getScoreColor(currentResult.style_score)"
+                style="flex: 1; margin: 0 12px;"
+              />
+              <span class="bd-large-value" :style="{ color: getScoreColor(currentResult.style_score) }">
+                {{ (currentResult.style_score || 0).toFixed(2) }}
+              </span>
+            </div>
+            <div v-if="(currentResult.expected_keywords?.length || 0) + (currentResult.expected_phrases?.length || 0) > 0" class="bd-large-item">
+              <span class="bd-large-label">关键词得分</span>
+              <el-progress
+                :percentage="Math.round((currentResult.keyword_score || 0) * 100)"
+                :stroke-width="8"
+                :show-text="false"
+                :color="getScoreColor(currentResult.keyword_score)"
+                style="flex: 1; margin: 0 12px;"
+              />
+              <span class="bd-large-value" :style="{ color: getScoreColor(currentResult.keyword_score) }">
+                {{ (currentResult.keyword_score || 0).toFixed(2) }}
+              </span>
+            </div>
+            <div class="bd-large-item final-item">
+              <span class="bd-large-label">综合评分</span>
+              <el-progress
+                :percentage="Math.round((currentResult.evaluation_score || 0) * 100)"
+                :stroke-width="10"
+                :show-text="false"
+                :color="getScoreColor(currentResult.evaluation_score)"
+                style="flex: 1; margin: 0 12px;"
+              />
+              <span class="bd-large-value final-score" :style="{ color: getScoreColor(currentResult.evaluation_score) }">
+                {{ (currentResult.evaluation_score || 0).toFixed(2) }}
+              </span>
+            </div>
+          </div>
         </div>
         <el-divider />
         <div class="detail-item">
@@ -381,6 +523,40 @@ function viewResultDetail(row) {
   detailVisible.value = true
 }
 
+function getRunAvgScore(run) {
+  if (!run.results?.length && run.passed_cases != null) {
+    return run.total_cases > 0 ? run.passed_cases / run.total_cases : 0
+  }
+  if (!run.results?.length) return 0
+  const total = run.results.reduce((sum, r) => sum + (r.evaluation_score || 0), 0)
+  return total / run.results.length
+}
+
+function getScoreLevelType(score) {
+  if (score >= 0.8) return 'success'
+  if (score >= 0.6) return 'warning'
+  return 'danger'
+}
+
+function getScoreLevelClass(score) {
+  if (score >= 0.8) return 'score-high'
+  if (score >= 0.6) return 'score-good'
+  return 'score-low'
+}
+
+function getScoreColor(score) {
+  if (score >= 0.8) return '#67C23A'
+  if (score >= 0.6) return '#E6A23C'
+  return '#F56C6C'
+}
+
+function getRowClassName({ row }) {
+  if (row.evaluation_score >= 0.8) return 'row-high-score'
+  if (row.evaluation_score >= 0.6) return 'row-good-score'
+  if (row.evaluation_score != null) return 'row-low-score'
+  return ''
+}
+
 function getStatusType(status) {
   const map = {
     pending: 'info',
@@ -431,6 +607,16 @@ watch(() => route.query.runId, (newVal) => {
 
 <style scoped lang="scss">
 .results-page {
+  :deep(.row-high-score td) {
+    background-color: rgba(103, 194, 58, 0.1) !important;
+  }
+  :deep(.row-good-score td) {
+    background-color: rgba(230, 162, 60, 0.08) !important;
+  }
+  :deep(.row-low-score td) {
+    background-color: rgba(245, 108, 108, 0.1) !important;
+  }
+
   .run-list-panel {
     background: #fff;
     border-radius: 8px;
@@ -458,6 +644,16 @@ watch(() => route.query.runId, (newVal) => {
     &.active {
       border-color: #409eff;
       background: #ecf5ff;
+    }
+
+    &.run-high-score {
+      border-left: 4px solid #67C23A;
+    }
+    &.run-good-score {
+      border-left: 4px solid #E6A23C;
+    }
+    &.run-low-score {
+      border-left: 4px solid #F56C6C;
     }
 
     .run-header {
@@ -489,10 +685,22 @@ watch(() => route.query.runId, (newVal) => {
     .run-stats {
       margin-bottom: 6px;
 
+      .score-row {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
       .stats-text {
         font-size: 12px;
         color: #909399;
         margin-left: 8px;
+      }
+
+      .avg-score-tag {
+        margin-left: auto;
+        font-weight: 600;
       }
     }
 
@@ -589,6 +797,68 @@ watch(() => route.query.runId, (newVal) => {
       color: #909399;
       margin-left: 6px;
     }
+
+    .rule-tags {
+      margin-top: 4px;
+    }
+
+    .mini-tag {
+      margin-right: 3px;
+      margin-bottom: 2px;
+      max-width: 60px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .score-breakdown {
+      .breakdown-item {
+        display: flex;
+        align-items: center;
+        margin-bottom: 4px;
+
+        .bd-label {
+          font-size: 11px;
+          color: #909399;
+          width: 40px;
+          flex-shrink: 0;
+        }
+
+        .bd-value {
+          font-size: 11px;
+          font-weight: 600;
+          color: #303133;
+          width: 36px;
+          text-align: right;
+        }
+      }
+
+      .breakdown-item:last-child {
+        margin-bottom: 0;
+      }
+    }
+
+    .final-score-cell {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 4px;
+
+      &.score-high {
+        background: rgba(103, 194, 58, 0.1);
+      }
+      &.score-good {
+        background: rgba(230, 162, 60, 0.08);
+      }
+      &.score-low {
+        background: rgba(245, 108, 108, 0.1);
+      }
+
+      .final-score-text {
+        font-weight: 600;
+        font-size: 14px;
+      }
+    }
   }
 
   .empty-state {
@@ -614,6 +884,7 @@ watch(() => route.query.runId, (newVal) => {
 
       .value {
         color: #303133;
+        flex: 1;
       }
 
       .script-text {
@@ -622,13 +893,76 @@ watch(() => route.query.runId, (newVal) => {
         border-radius: 4px;
         font-size: 13px;
         line-height: 1.6;
-        flex: 1;
       }
 
       .score-big {
         font-size: 24px;
         font-weight: 600;
         color: #409eff;
+      }
+
+      .rule-detail-row {
+        margin-bottom: 4px;
+      }
+
+      .rule-group {
+        margin-top: 6px;
+
+        .rule-group-label {
+          font-size: 12px;
+          color: #909399;
+          margin-bottom: 4px;
+        }
+      }
+
+      .mr-4 {
+        margin-right: 6px;
+      }
+      .mb-4 {
+        margin-bottom: 4px;
+      }
+      .mt-8 {
+        margin-top: 8px;
+      }
+
+      .score-detail-section {
+        .score-breakdown-large {
+          width: 100%;
+        }
+
+        .bd-large-item {
+          display: flex;
+          align-items: center;
+          margin-bottom: 10px;
+
+          .bd-large-label {
+            font-size: 13px;
+            color: #606266;
+            width: 80px;
+            flex-shrink: 0;
+          }
+
+          .bd-large-value {
+            font-size: 14px;
+            font-weight: 600;
+            width: 50px;
+            text-align: right;
+          }
+
+          &.final-item {
+            padding-top: 8px;
+            border-top: 1px dashed #ebeef5;
+
+            .bd-large-label {
+              font-weight: 600;
+              color: #303133;
+            }
+
+            .final-score {
+              font-size: 18px;
+            }
+          }
+        }
       }
     }
 
